@@ -40,18 +40,8 @@ program poisson
     ! Iterate
     call timer%tick()
     do n = 1,nt
-        norm_df = 0.0d0
-        do j = 2,ny-1
-        do i = 2,nx-1
-            f1(i,j) = 0.25d0*metrics%inv_dxy*(         &
-                metrics%ax*(f0(i-1,j) + f0(i+1,j)) +   &
-                metrics%ay*(f0(i,j-1) + f0(i,j+1))     &
-            )
-            df = f1(i,j) - f0(i,j);
-            norm_df = norm_df + df*df;
-        end do
-        end do
-        norm_df = sqrt(norm_df)/(nx*ny)
+        !norm_df = simple_update(f0,f1,metrics)
+        norm_df = do_concurrent_update(f0,f1,metrics)
         if (mod(n,np) == 0) write(*,'(i6,1p,e14.6)') n, norm_df
         call swap(f1, f0)
     end do
@@ -85,11 +75,46 @@ contains
         bv = a2 / (a2 + r2)
     end function
 
-    function simple_update(f0, f1, metrics) result(norm_df)
-        real(8), intent(in) :: f0(:,:), f1(:,:)
-        type(metrics_t), intent(in) :: metrics
-        real(8) :: norm_df
+    function simple_update(f0, f1, m) result(norm_df)
+        real(8), intent(in) :: f0(:,:)
+        real(8), intent(inout) :: f1(:,:)
+        type(metrics_t), intent(in) :: m
+        real(8) :: df, norm_df
+        integer :: i,j,imax,jmax
+        imax = size(f0,1)-1
+        jmax = size(f0,2)-1
         norm_df = 0.0d0
+        do j = 2,imax
+        do i = 2,jmax
+            f1(i,j) = 0.25d0*m%inv_dxy*(         &
+                m%ax*(f0(i-1,j) + f0(i+1,j)) +   &
+                m%ay*(f0(i,j-1) + f0(i,j+1))     &
+            )
+            df = f1(i,j) - f0(i,j);
+            norm_df = norm_df + df*df;
+        end do
+        end do
+        norm_df = sqrt(norm_df)/(nx*ny)
+    end function
+
+    function do_concurrent_update(f0, f1, m) result(norm_df)
+        real(8), intent(in) :: f0(:,:)
+        real(8), intent(inout) :: f1(:,:)
+        type(metrics_t), intent(in) :: m
+        real(8) :: df, norm_df
+        integer :: i,j,imax,jmax
+        imax = size(f0,1)-1
+        jmax = size(f0,2)-1
+        norm_df = 0.0d0
+        do concurrent (j=2:jmax, i=2:imax)
+            f1(i,j) = 0.25d0*m%inv_dxy*(         &
+                m%ax*(f0(i-1,j) + f0(i+1,j)) +   &
+                m%ay*(f0(i,j-1) + f0(i,j+1))     &
+            )
+            df = f1(i,j) - f0(i,j);
+            norm_df = norm_df + df*df;
+        end do
+        norm_df = sqrt(norm_df)/(nx*ny)
     end function
 
     subroutine swap(p1, p2)
