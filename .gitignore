@@ -1,1 +1,3 @@
-poisson
+poisson-*
+**.mod
+**.o

@@ -126,13 +126,13 @@ int main(int argc, char* argv[]) {
     }
     sw.stop();
 
-    // Final solution
+    // Result summary
     int imid = nx/2;
     int jmid = ny/2;
     auto dt = sw.get_elapsed();
-    printf("\nFinal Value at (%i,%i): %6.4f\n", imid, jmid, f0(imid,jmid));
-    printf("Elapsed Time:             %.2f sec\n", dt);
-    printf("Throughput:               %.2f MUPS\n\n", 1.0e-6*nt*(nx-2)*(ny-2)/dt);
+    printf("\nMidpoint Value:  %6.4f\n", f0(imid,jmid));
+    printf("Elapsed Time:    %.2f sec\n", dt);
+    printf("Throughput:      %.2f MUPS\n\n", (nt/1.0e6)*(nx-2)*(ny-2)/dt);
     return 0;
 
 }
