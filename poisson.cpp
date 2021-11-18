@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstdio>
 #include <cmath>
 #include <string>
@@ -31,12 +32,13 @@ double boundary_value(double x, double y) {
     return a2 / (a2 + r2);
 }
 
-double simple_update(span2d f0, span2d f1, const Metrics& m) {
-    auto nx = f0.extent(0);
-    auto ny = f1.extent(1);
-    span2d::value_type norm_df = 0.0;
-    for (int i = 1; i < nx-1; ++i) {
-    for (int j = 1; j < ny-1; ++j) {
+auto simple_update(const span2d f0, const span2d f1, const Metrics& m) {
+    const int ni = f0.extent(0);
+    const int nj = f0.extent(1);
+
+    auto norm_df = 0.0 * f0(1,1);
+    for (int i = 1; i < ni-1; ++i) {
+    for (int j = 1; j < nj-1; ++j) {
         f1(i,j) = 0.25*m.inv_dxy*(
             m.ax*(f0(i-1,j) + f0(i+1,j)) +
             m.ay*(f0(i,j-1) + f0(i,j+1))
@@ -44,7 +46,37 @@ double simple_update(span2d f0, span2d f1, const Metrics& m) {
         auto df = f1(i,j) - f0(i,j);
         norm_df += df*df;
     }}
-    return std::sqrt(norm_df)/(nx*ny);
+
+    return std::sqrt(norm_df)/(ni*nj);
+}
+
+auto blocked_update(const span2d f0, const span2d f1, const Metrics& m) {
+    const int ni = f0.extent(0);
+    const int nj = f0.extent(1);
+
+    constexpr int nb = 8;
+    assert((ni-2) % nb == 0);
+    assert((nj-2) % nb == 0);
+    const int nbi = (ni-2) / nb;
+    const int nbj = (nj-2) / nb;
+
+    auto norm_df = 0.0 * f0(1,1);
+    for (int bi = 0; bi < nbi; ++bi) {
+    for (int bj = 0; bj < nbj; ++bj) {
+        const int imin = bi*nb+1, imax = imin+nb;
+        const int jmin = bj*nb+1, jmax = jmin+nb;
+        for (int i = imin; i < imax; ++i) {
+        for (int j = jmin; j < jmax; ++j) {
+            f1(i,j) = 0.25*m.inv_dxy*(
+                m.ax*(f0(i-1,j) + f0(i+1,j)) +
+                m.ay*(f0(i,j-1) + f0(i,j+1))
+            );
+            auto df = f1(i,j) - f0(i,j);
+            norm_df += df*df;
+        }}
+    }}
+
+    return std::sqrt(norm_df)/(ni*nj);
 }
 
 void print(span2d f) {
@@ -59,10 +91,10 @@ void print(span2d f) {
 int main(int argc, char* argv[]) {
 
     // Arugment processing
-    const int nx = (argc > 1)? std::stoi(argv[1]) : 11;
-    const int ny = (argc > 2)? std::stoi(argv[2]) : nx;
-    const int nt = (argc > 3)? std::stoi(argv[3]) : 1000;
-    const int np = (argc > 4)? std::stoi(argv[4]) : 100;
+    const int nx = (argc > 1)? std::stoi(argv[1])+2 : 18;  // +2 for boundary nodes
+    const int ny = (argc > 2)? std::stoi(argv[2])+2 : nx;
+    const int nt = (argc > 3)? std::stoi(argv[3])   : 1000;
+    const int np = (argc > 4)? std::stoi(argv[4])   : 100;
 
     // Allocate data arrays
     auto storage0 = std::vector<double>(nx*ny, 0.0);
@@ -86,16 +118,21 @@ int main(int argc, char* argv[]) {
     sw.start();
     for (int n = 1; n <= nt; ++n) {
         auto norm_df = simple_update(f0, f1, metrics);
+        //auto norm_df = blocked_update(f0, f1, metrics);
+        //auto norm_df = stdpar_update(f0, f1, metrics);
+        //auto norm_df = kokkos_update(f0, f1, metrics);
         if (n % np == 0) printf("%6i %12.6e\n", n, norm_df);
         std::swap(f1,f0);
     }
     sw.stop();
 
     // Final solution
-    int imid = nx/2 + 1;
-    int jmid = ny/2 + 1;
+    int imid = nx/2;
+    int jmid = ny/2;
+    auto dt = sw.get_elapsed();
     printf("\nFinal Value at (%i,%i): %6.4f\n", imid, jmid, f0(imid,jmid));
-    printf("Throughput: %.2f MUPS\n\n", nt*(nx-2)*(ny-2)/(1e6*sw.get_elapsed()));
+    printf("Elapsed Time:             %.2f sec\n", dt);
+    printf("Throughput:               %.2f MUPS\n\n", 1.0e-6*nt*(nx-2)*(ny-2)/dt);
     return 0;
 
 }
