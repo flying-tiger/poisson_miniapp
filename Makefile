@@ -1,18 +1,34 @@
+VPATH := cpp fortran
+
 .PHONY:
-all: poisson-nvcpp poisson-nvfort poisson-icpc poisson-ifort
+all: bin/poisson-nvcpp  \
+     bin/poisson-nvfort-serial \
+     bin/poisson-nvfort-multicore \
+     bin/poisson-icpc\
+     bin/poisson-ifort-serial \
+     bin/poisson-ifort-multicore
 
 .PHONY:
 clean:
-	rm -f *.o *.mod poisson-*
+	rm -rf bin build
 
-poisson-nvcpp: poisson.cpp
+bin/poisson-nvcpp: poisson.cpp | bin
 	nvc++ -O3 -std=c++20 $^ -o $@
 
-poisson-nvfort: utils.f90 poisson.f90
-	nvfortran -03 -stdpar=multicore -Minfo $^ -o $@
+bin/poisson-nvfort: utils.f90 poisson.f90 | bin
+	nvfortran -O3 -stdpar=multicore $^ -o $@
 
-poisson-icpc: poisson.cpp
+bin/poisson-nvfort-multicore: utils.f90 poisson.f90 | bin
+	nvfortran -O3 -stdpar=multicore $^ -o $@
+
+bin/poisson-icpc: poisson.cpp | bin
 	icpc -O3 -std=c++20 $^ -o $@
 
-poisson-ifort: utils.f90 poisson.f90
-	ifort -O3 -qparallel -qopt-report=5 -qopt-report-file=stdout $^ -o $@
+bin/poisson-ifort: utils.f90 poisson.f90 | bin
+	ifort -module build -O3 $^ -o $@
+
+bin/poisson-ifort-multicore: utils.f90 poisson.f90 | bin
+	ifort -module build -O3 -parallel $^ -o $@
+
+bin:
+	mkdir -p bin build

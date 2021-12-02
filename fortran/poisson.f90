@@ -99,13 +99,14 @@ contains
 
     function do_concurrent_update(f0, f1, m) result(norm_df)
         real(8), intent(in) :: f0(:,:)
-        real(8), intent(inout) :: f1(:,:)
+        real(8), intent(out) :: f1(:,:)
         type(metrics_t), intent(in) :: m
         real(8) :: df, norm_df
         integer :: i,j,imax,jmax
         imax = size(f0,1)-1
         jmax = size(f0,2)-1
         norm_df = 0.0d0
+        !dir$ loop count min(256)
         do concurrent (j=2:jmax, i=2:imax)
             f1(i,j) = 0.25d0*m%inv_dxy*(         &
                 m%ax*(f0(i-1,j) + f0(i+1,j)) +   &
