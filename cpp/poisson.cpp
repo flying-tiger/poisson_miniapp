@@ -1,138 +1,211 @@
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <cmath>
 #include <string>
+#include <map>
 #include <vector>
 #include "mdspan.hpp"
 #include "stopwatch.hpp"
 
+using namespace std::string_literals;
 namespace stdex = std::experimental;
-using span2d = stdex::mdspan<double, stdex::extents<
+using Span3d = stdex::mdspan<double, stdex::extents<
+    stdex::dynamic_extent,
     stdex::dynamic_extent,
     stdex::dynamic_extent
 >>;
+using CSpan3d = stdex::mdspan<const double, stdex::extents<
+    stdex::dynamic_extent,
+    stdex::dynamic_extent,
+    stdex::dynamic_extent
+>>;
+using Double2 = std::array<double,2>;
+using Int3 = std::array<int,3>;
+using std::pair;
 
 struct Metrics {
-    double dx, dy;
-    double ax, ay, dxy;
-    double inv_dxy;
-    Metrics(int nx, int ny) {
-        dx  = 1.0 / (nx-1);
-        dy  = 1.0 / (ny-1);
-        ax  = 1.0 / (dx*dx);
-        ay  = 1.0 / (dy*dy);
-        dxy = 0.5 * (ax + ay);
-        inv_dxy = 1.0/dxy;
+    double dx, dy, dz;
+    double ax, ay, az, dxyz;
+    double inv_dxyz;
+    Metrics(int nx, int ny, int nz) {
+        dx = 1.0 / (nx-1);
+        dy = 1.0 / (ny-1);
+        dz = 1.0 / (nz-1);
+        ax = 1.0 / (dx*dx);
+        ay = 1.0 / (dy*dy);
+        az = 1.0 / (dz*dz);
+        dxyz = 2.0 * (ax + ay + az);
+        inv_dxyz = 1.0/dxyz;
     }
 };
 
-double boundary_value(double x, double y) {
-    double a2 = 0.1;
-    double r2 = x*x + y*y;
-    return a2 / (a2 + r2);
+inline Double2 solution(int i, int j, int k, const Metrics& m) {
+    auto x  = i*m.dx;
+    auto y  = j*m.dy;
+    auto z  = k*m.dz;
+    auto r2 = x*x + y*y + z*z;
+    auto u  = std::exp(-r2);
+    auto f  = (4.0*r2 - 6.0)*u;
+    return {u, f};
 }
 
-auto simple_update(const span2d f0, const span2d f1, const Metrics& m) {
-    const int ni = f0.extent(0);
-    const int nj = f0.extent(1);
-
-    auto norm_df = 0.0 * f0(1,1);
-    for (int i = 1; i < ni-1; ++i) {
-    for (int j = 1; j < nj-1; ++j) {
-        f1(i,j) = 0.25*m.inv_dxy*(
-            m.ax*(f0(i-1,j) + f0(i+1,j)) +
-            m.ay*(f0(i,j-1) + f0(i,j+1))
-        );
-        auto df = f1(i,j) - f0(i,j);
-        norm_df += df*df;
-    }}
-
-    return std::sqrt(norm_df)/(ni*nj);
+inline Double2 stencil(int i, int j, int k, const CSpan3d u0, const CSpan3d f, const Metrics& m) {
+    double u = -f(i,j,k);
+    u += m.ax*u0(i-1,j,k);
+    u += m.ax*u0(i+1,j,k);
+    u += m.ay*u0(i,j-1,k);
+    u += m.ay*u0(i,j+1,k);
+    u += m.az*u0(i,j,k-1);
+    u += m.az*u0(i,j,k+1);
+    u *= m.inv_dxyz;
+    double du = u - u0(i,j,k);
+    return {u, du};
 }
 
-auto blocked_update(const span2d f0, const span2d f1, const Metrics& m) {
-    const int ni = f0.extent(0);
-    const int nj = f0.extent(1);
+inline Int3 block_count(const CSpan3d u, const int block_size) {
+    const int ni = u.extent(0);
+    const int nj = u.extent(1);
+    const int nk = u.extent(2);
+    const int nbi = (ni-2) / block_size;
+    const int nbj = (nj-2) / block_size;
+    const int nbk = (nk-2) / block_size;
+    assert((ni-2) % block_size == 0);
+    assert((nj-2) % block_size == 0);
+    assert((nk-2) % block_size == 0);
+    return {nbi, nbj, nbk};
+}
 
-    constexpr int nb = 8;
-    assert((ni-2) % nb == 0);
-    assert((nj-2) % nb == 0);
-    const int nbi = (ni-2) / nb;
-    const int nbj = (nj-2) / nb;
+double simple_update(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
+    double norm_du = 0.0;
+    for (int i = 1; i < u0.extent(0)-1; ++i) {
+    for (int j = 1; j < u0.extent(1)-1; ++j) {
+    for (int k = 1; k < u0.extent(2)-1; ++k) {
+        auto [u, du] = stencil(i, j, k, u0, f, m);
+        u1(i,j,k) = u;
+        norm_du += du*du;
+    }}}
+    return std::sqrt(norm_du);
+}
 
-    auto norm_df = 0.0 * f0(1,1);
+double simple_update_omp(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
+    double norm_du = 0.0;
+    #pragma omp parallel for collapse(2) reduction(+:norm_du)
+    for (int i = 1; i < u0.extent(0)-1; ++i) {
+    for (int j = 1; j < u0.extent(1)-1; ++j) {
+    for (int k = 1; k < u0.extent(2)-1; ++k) {
+        auto [u, du] = stencil(i, j, k, u0, f, m);
+        u1(i,j,k) = u;
+        norm_du += du*du;
+    }}}
+    return std::sqrt(norm_du);
+}
+
+double blocked_update(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
+    constexpr int block_size = 8;
+    auto [nbi, nbj, nbk] = block_count(u0, block_size);
+    double norm_du = 0.0;
     for (int bi = 0; bi < nbi; ++bi) {
     for (int bj = 0; bj < nbj; ++bj) {
-        const int imin = bi*nb+1, imax = imin+nb;
-        const int jmin = bj*nb+1, jmax = jmin+nb;
-        for (int i = imin; i < imax; ++i) {
-        for (int j = jmin; j < jmax; ++j) {
-            f1(i,j) = 0.25*m.inv_dxy*(
-                m.ax*(f0(i-1,j) + f0(i+1,j)) +
-                m.ay*(f0(i,j-1) + f0(i,j+1))
-            );
-            auto df = f1(i,j) - f0(i,j);
-            norm_df += df*df;
-        }}
+        int imin = bi*block_size+1;
+        int jmin = bj*block_size+1;
+        for (int i = imin; i < imin+block_size; ++i) {
+        for (int j = jmin; j < jmin+block_size; ++j) {
+        for (int k = 1; k < u0.extent(2)-1; ++k) {
+            auto [u, du] = stencil(i, j, k, u0, f, m);
+            u1(i,j,k) = u;
+            norm_du += du*du;
+        }}}
     }}
-
-    return std::sqrt(norm_df)/(ni*nj);
+    return std::sqrt(norm_du);
 }
 
-void print(span2d f) {
-    for (int j = 0; j < f.extent(1); ++j) {
-        for (int i = 0; i < f.extent(0); ++i) {
-            printf("%6.4f ", f(i,j));
-        }
-        printf("\n");
-    }
+double blocked_update_omp(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
+    constexpr int block_size = 8;
+    auto [nbi, nbj, nbk] = block_count(u0, block_size);
+    double norm_du = 0.0;
+    #pragma omp parallel for collapse(2) reduction(+:norm_du)
+    for (int bi = 0; bi < nbi; ++bi) {
+    for (int bj = 0; bj < nbj; ++bj) {
+        const int imin = bi*block_size+1;
+        const int jmin = bj*block_size+1;
+        for (int i = imin; i < imin+block_size; ++i) {
+        for (int j = jmin; j < jmin+block_size; ++j) {
+        for (int k = 1; k < u0.extent(2)-1; ++k) {
+            auto [u, du] = stencil(i, j, k, u0, f, m);
+            u1(i,j,k) = u;
+            norm_du += du*du;
+        }}}
+    }}
+    return std::sqrt(norm_du);
 }
 
 int main(int argc, char* argv[]) {
 
-    // Arugment processing
-    const int nx = (argc > 1)? std::stoi(argv[1])+2 : 18;  // +2 for boundary nodes
-    const int ny = (argc > 2)? std::stoi(argv[2])+2 : nx;
-    const int nt = (argc > 3)? std::stoi(argv[3])   : 1000;
-    const int np = (argc > 4)? std::stoi(argv[4])   : 100;
+    // Argument processing
+    const std::string kname = (argc > 1)? argv[1] : "simple";
+    const int nx = (argc > 2)? std::stoi(argv[2])+2 : 18;  // +2 for boundary nodes
+    const int ny = (argc > 3)? std::stoi(argv[3])+2 : nx;
+    const int nz = (argc > 4)? std::stoi(argv[4])+2 : nx;
+    const int nt = (argc > 5)? std::stoi(argv[5])   : 1000;
+    const int np = (argc > 6)? std::stoi(argv[6])   : 100;
+
+    // Select update kernel
+    auto kernels = std::map{
+        pair{"simple"s,     simple_update},
+        pair{"simple_omp"s, simple_update_omp},
+        pair{"block"s,      blocked_update},
+        pair{"block_omp"s,  blocked_update_omp}
+    };
+    assert(kernels[kname]);
+    auto update_kernel = kernels[kname];
 
     // Allocate data arrays
-    auto storage0 = std::vector<double>(nx*ny, 0.0);
-    auto storage1 = std::vector<double>(nx*ny, 0.0);
-    auto f0 = span2d(storage0.data(), nx, ny);
-    auto f1 = span2d(storage1.data(), nx, ny);
+    auto storage_u0 = std::vector<double>(nx*ny*nz, 0.0);
+    auto storage_u1 = std::vector<double>(nx*ny*nz, 0.0);
+    auto storage_f  = std::vector<double>(nx*ny*nz, 0.0);
+    auto u0 = Span3d(storage_u0.data(), nx, ny, nz);
+    auto u1 = Span3d(storage_u1.data(), nx, ny, nz);
+    auto f  = Span3d(storage_f.data(),  nx, ny, nz);
 
-    // Apply boundary conditions
-    auto metrics = Metrics(nx,ny);
+    // Apply boundary conditions, source term
+    auto metrics = Metrics(nx,ny,nz);
     for (int i = 0; i < nx; ++i) {
-        f0(i,0)    = f1(i,0)    = boundary_value(i*metrics.dx, 0.0);
-        f0(i,ny-1) = f1(i,ny-1) = boundary_value(i*metrics.dx, 1.0);
-    }
     for (int j = 0; j < ny; ++j) {
-        f0(0,j)    = f1(0,j)    = boundary_value(0.0, j*metrics.dy);
-        f0(nx-1,j) = f1(nx-1,j) = boundary_value(1.0, j*metrics.dy);
-    }
+    for (int k = 0; k < nz; ++k) {
+        const auto [value, source] = solution(i, j, k, metrics);
+        bool iboundary = (i == 0) || (i == nx-1);
+        bool jboundary = (j == 0) || (j == ny-1);
+        bool kboundary = (k == 0) || (k == nz-1);
+        if (iboundary || jboundary || kboundary) {
+            u0(i,j,k) = value;
+            u1(i,j,k) = value;
+        }
+        f(i,j,k) = source;
+    }}}
 
     // Iterate
     Stopwatch<> sw;
     sw.start();
     for (int n = 1; n <= nt; ++n) {
-        auto norm_df = simple_update(f0, f1, metrics);
-        //auto norm_df = blocked_update(f0, f1, metrics);
-        //auto norm_df = stdpar_update(f0, f1, metrics);
-        //auto norm_df = kokkos_update(f0, f1, metrics);
-        if (n % np == 0) printf("%6i %12.6e\n", n, norm_df);
-        std::swap(f1,f0);
+        auto norm_du = update_kernel(u0, u1, f, metrics);
+        if (n % np == 0) printf("%6i %12.6e\n", n, norm_du/(nx*ny*nz));
+        std::swap(u1,u0);
     }
     sw.stop();
 
+    // Extract check value
+    const auto u_check = u0(nx/2, ny/2, nz/2);
+    const auto [u_exact, f_exact] = solution(nx/2, ny/2, nz/2, metrics);
+
     // Result summary
-    int imid = nx/2;
-    int jmid = ny/2;
     auto dt = sw.get_elapsed();
-    printf("\nMidpoint Value:  %6.4f\n", f0(imid,jmid));
-    printf("Elapsed Time:    %.2f sec\n", dt);
-    printf("Throughput:      %.2f MUPS\n\n", (nt/1.0e6)*(nx-2)*(ny-2)/dt);
+    printf("\nKernel:            %s\n", kname.c_str());
+    printf("Check Value:       %8.6f\n", u_check);
+    printf("Exact Value:       %8.6f\n", u_exact);
+    printf("Check Value Error: %8.6f\n", std::abs(u_check - u_exact));
+    printf("Elapsed Time:      %.2f sec\n", dt);
+    printf("Throughput:        %.2f MUPS\n\n", (nt/1.0e6)*(nx-2)*(ny-2)*(nz-2)/dt);
     return 0;
 
 }
