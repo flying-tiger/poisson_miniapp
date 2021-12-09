@@ -63,19 +63,6 @@ inline Double2 stencil(int i, int j, int k, const CSpan3d u0, const CSpan3d f, c
     return {u, du};
 }
 
-inline Int3 block_count(const CSpan3d u, const int block_size) {
-    const int ni = u.extent(0);
-    const int nj = u.extent(1);
-    const int nk = u.extent(2);
-    const int nbi = (ni-2) / block_size;
-    const int nbj = (nj-2) / block_size;
-    const int nbk = (nk-2) / block_size;
-    assert((ni-2) % block_size == 0);
-    assert((nj-2) % block_size == 0);
-    assert((nk-2) % block_size == 0);
-    return {nbi, nbj, nbk};
-}
-
 double simple_update(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
     double norm_du = 0.0;
     for (int i = 1; i < u0.extent(0)-1; ++i) {
@@ -103,15 +90,17 @@ double simple_update_omp(const CSpan3d u0, const Span3d u1, const CSpan3d f, con
 
 double blocked_update(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
     constexpr int block_size = 8;
-    auto [nbi, nbj, nbk] = block_count(u0, block_size);
+    const int ni = u0.extent(0);
+    const int nj = u0.extent(1);
+    const int nk = u0.extent(2);
+    assert((ni-2) % block_size == 0);
+    assert((nj-2) % block_size == 0);
     double norm_du = 0.0;
-    for (int bi = 0; bi < nbi; ++bi) {
-    for (int bj = 0; bj < nbj; ++bj) {
-        int imin = bi*block_size+1;
-        int jmin = bj*block_size+1;
-        for (int i = imin; i < imin+block_size; ++i) {
-        for (int j = jmin; j < jmin+block_size; ++j) {
-        for (int k = 1; k < u0.extent(2)-1; ++k) {
+    for (int ib = 1; ib < ni-1; ib+=block_size) {
+    for (int jb = 1; jb < nj-1; jb+=block_size) {
+        for (int i = ib; i < ib+block_size; ++i) {
+        for (int j = jb; j < jb+block_size; ++j) {
+        for (int k = 1;  k < nk-1;          ++k) {
             auto [u, du] = stencil(i, j, k, u0, f, m);
             u1(i,j,k) = u;
             norm_du += du*du;
@@ -122,16 +111,18 @@ double blocked_update(const CSpan3d u0, const Span3d u1, const CSpan3d f, const 
 
 double blocked_update_omp(const CSpan3d u0, const Span3d u1, const CSpan3d f, const Metrics& m) {
     constexpr int block_size = 8;
-    auto [nbi, nbj, nbk] = block_count(u0, block_size);
+    const int ni = u0.extent(0);
+    const int nj = u0.extent(1);
+    const int nk = u0.extent(2);
+    assert((ni-2) % block_size == 0);
+    assert((nj-2) % block_size == 0);
     double norm_du = 0.0;
     #pragma omp parallel for collapse(2) reduction(+:norm_du)
-    for (int bi = 0; bi < nbi; ++bi) {
-    for (int bj = 0; bj < nbj; ++bj) {
-        const int imin = bi*block_size+1;
-        const int jmin = bj*block_size+1;
-        for (int i = imin; i < imin+block_size; ++i) {
-        for (int j = jmin; j < jmin+block_size; ++j) {
-        for (int k = 1; k < u0.extent(2)-1; ++k) {
+    for (int ib = 1; ib < ni-1; ib+=block_size) {
+    for (int jb = 1; jb < nj-1; jb+=block_size) {
+        for (int i = ib; i < ib+block_size; ++i) {
+        for (int j = jb; j < jb+block_size; ++j) {
+        for (int k = 1;  k < nk-1;          ++k) {
             auto [u, du] = stencil(i, j, k, u0, f, m);
             u1(i,j,k) = u;
             norm_du += du*du;
